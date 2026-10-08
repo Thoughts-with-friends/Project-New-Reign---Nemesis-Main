@@ -1,0 +1,3 @@
+# Always write LF: the repo normalizes text files to LF (`.gitattributes`) and
+# `core.safecrlf` rejects files that would be converted on `git add`.
+newline_style = "Unix"

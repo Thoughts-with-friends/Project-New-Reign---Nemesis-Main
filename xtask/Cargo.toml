@@ -1,0 +1,12 @@
+# Development task runner (`cargo xtask <task>`), registered as an alias in
+# `.cargo/config.toml`. Not published, not part of `default-members`.
+[package]
+name = "xtask"
+description = "Development tasks for the Nemesis egui workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true

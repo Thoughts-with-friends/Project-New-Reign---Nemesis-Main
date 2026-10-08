@@ -283,3 +283,6 @@ ModelManifest.xml
 /test environment/data/meshes/actors/character/animations
 /.vscode
 /cpp.hint
+
+# Rust build output
+/target/
