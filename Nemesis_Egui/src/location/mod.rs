@@ -9,8 +9,10 @@
 //!   out like `Data` (an MO2 mod folder);
 //! * an MO2 `mods` folder without `\*`, which is treated as `mods\*`.
 //!
-//! When the field is empty and the GUI runs from `<MO2>/mods/<mod>/`, the
-//! default is `<MO2>/mods/*`; otherwise the detected Skyrim `Data` directory.
+//! When the field is empty, the Skyrim `Data` directory of this user's game
+//! install is detected (see [`detect`]). Under MO2 the game's `Data` is
+//! virtualized, so it shows every enabled mod and the engine's `meshes`
+//! templates in one place.
 //!
 //! * [`glob`]: wildcard expansion;
 //! * [`detect`]: MO2 / Skyrim detection.
@@ -22,13 +24,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::config::AppConfig;
+use crate::engine::embedded;
 
 /// File name of the engine executable.
-const ENGINE_EXE: &str = if cfg!(windows) {
-    "Nemesis_Engine.exe"
-} else {
-    "Nemesis_Engine"
-};
+const ENGINE_EXE: &str = embedded::ENGINE_EXE_NAME;
 
 /// Facts about the running process that path resolution depends on.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -37,16 +36,19 @@ pub struct Environment {
     pub exe: Option<PathBuf>,
     /// Automatically detected Skyrim `Data` directory.
     pub detected_data_dir: Option<PathBuf>,
+    /// How `detected_data_dir` was found, for diagnostics.
+    pub detected_by: Option<String>,
 }
 
 impl Environment {
     /// Inspects the current process (executable path, registry).
     pub fn current(config: &AppConfig) -> Self {
         let exe = std::env::current_exe().ok();
-        let detected_data_dir = detect::detect_data_dir(config.platform, exe.as_deref());
+        let detected = detect::detect_data_dir(config.platform, exe.as_deref());
         Self {
             exe,
-            detected_data_dir,
+            detected_by: detected.as_ref().map(|found| found.method.clone()),
+            detected_data_dir: detected.map(|found| found.data_dir),
         }
     }
 }
@@ -56,16 +58,21 @@ impl Environment {
 pub struct Locations {
     /// Value used for the data field (the field itself, or the default when empty).
     pub data_source: String,
-    /// What an empty data field resolves to.
+    /// What an empty data field resolves to: the detected Skyrim `Data` directory.
     pub default_data_source: String,
+    /// How the Skyrim `Data` directory was detected, if it was.
+    pub detected_by: Option<String>,
     /// Whether `data_source` addresses MO2 mod folders rather than one `Data` directory.
     pub is_mod_folders: bool,
     /// Directories laid out like `Data` (one per matched mod folder in glob mode).
     pub data_roots: Vec<PathBuf>,
     /// Skyrim `Data` directory passed to the engine with `-d`.
     pub engine_data_dir: Option<PathBuf>,
-    /// Engine executable to launch.
+    /// Engine executable to launch. For the built-in engine this is only a virtual
+    /// path; its directory is the engine home (`mods`, `behavior_templates`, ...).
     pub engine_path: PathBuf,
+    /// Whether the engine linked into this executable is used (no explicit path).
+    pub embedded_engine: bool,
     /// Directories whose sub folders are scanned for `info.ini`.
     pub mod_dirs: Vec<PathBuf>,
 }
@@ -79,14 +86,9 @@ impl Locations {
     /// Resolves `config` against an explicit environment.
     pub fn resolve_with(config: &AppConfig, env: &Environment) -> Self {
         let default_data_source = env
-            .exe
-            .as_deref()
-            .and_then(detect::mo2_mods_pattern)
-            .or_else(|| {
-                env.detected_data_dir
-                    .as_ref()
-                    .map(|dir| dir.display().to_string())
-            })
+            .detected_data_dir
+            .as_ref()
+            .map(|dir| dir.display().to_string())
             .unwrap_or_default();
 
         let field = config.data_dir.trim();
@@ -99,15 +101,18 @@ impl Locations {
         let (data_roots, is_mod_folders) = data_roots(&data_source);
         let engine_data_dir = engine_data_dir(config, &data_source, is_mod_folders, env);
         let engine_path = engine_path(config, engine_data_dir.as_deref());
+        let embedded_engine = embedded::AVAILABLE && config.engine_path.trim().is_empty();
         let mod_dirs = mod_dirs(&data_roots, &engine_path);
 
         Self {
             data_source,
             default_data_source,
+            detected_by: env.detected_by.clone(),
             is_mod_folders,
             data_roots,
             engine_data_dir,
             engine_path,
+            embedded_engine,
             mod_dirs,
         }
     }

@@ -2,16 +2,30 @@
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
 project("Nemesis_Engine" VERSION 1.0.0)
+
+# MSVC-style compilers (cl, clang-cl) ignore GCC's -O3. Keep CMake's defaults
+# there (they also select the CRT, e.g. /MD) and only drop /DNDEBUG, matching the
+# -O3 builds which keep asserts.
+if(MSVC)
+    string(REPLACE "/DNDEBUG" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+else()
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+endif()
 
 include_directories(include)
 
 ################################################################################
 # Required packages
 ################################################################################
-if(WIN32)
+# Embedded Python runs the scripts in `scripts/start` and `scripts/end`. Turn it
+# off to build the engine without CPython, e.g. when linking it into the Rust GUI.
+option(NEMESIS_WITH_PYTHON "Embed Python for start/end scripts" ON)
+
+if(NOT NEMESIS_WITH_PYTHON)
+    message(STATUS "Nemesis_Engine: Python scripting disabled")
+elseif(WIN32)
     include(Python.cmake)
 else()
     find_package(Python EXACT 3.12.11 COMPONENTS Interpreter Development.Embed REQUIRED)
@@ -408,8 +422,8 @@ set(Utilities_SourceFiles
 source_group("Source Files\\Utilities" FILES ${Utilities_SourceFiles})
 
 set(SourceFiles
+    "src/EngineMain.cpp"
     "src/Logger.cpp"
-    "src/main.cpp"
     "src/NemesisInfo.cpp"
     )
 source_group("Source Files" FILES ${SourceFiles})
@@ -452,25 +466,38 @@ include_directories(${exprtk_SOURCE_DIR})
 ################################################################################
 # Target
 ################################################################################
-add_executable(${PROJECT_NAME} ${AllHeaderFiles} ${AllSourceFiles})
+# Everything except the process entry point, so the engine can also be linked
+# into other programs (the Rust GUI calls `nemesis_engine_main`, see
+# include/EngineMain.h).
+add_library(${PROJECT_NAME}_Lib STATIC ${AllHeaderFiles} ${AllSourceFiles})
+target_include_directories(${PROJECT_NAME}_Lib PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
-target_link_libraries(${PROJECT_NAME}
-    PRIVATE
+target_link_libraries(${PROJECT_NAME}_Lib
+    PUBLIC
         nlohmann_json::nlohmann_json
         Nemesis::Havok
-        Nemesis::Python
 )
+
+if(NEMESIS_WITH_PYTHON)
+    target_link_libraries(${PROJECT_NAME}_Lib PUBLIC Nemesis::Python)
+    target_compile_definitions(${PROJECT_NAME}_Lib PUBLIC NEMESIS_WITH_PYTHON=1)
+endif()
+
+add_executable(${PROJECT_NAME} "src/main.cpp")
+target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_Lib)
 
 if(MSVC)
     #Required
-    target_compile_options(${PROJECT_NAME} PRIVATE "/bigobj")
+    target_compile_options(${PROJECT_NAME}_Lib PRIVATE "/bigobj")
     target_link_options(${PROJECT_NAME} PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:Nemesis::Havok>")
 
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy
-            "${Python_DLL_PATH}"
-            "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
-    )
+    if(NEMESIS_WITH_PYTHON)
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy
+                "${Python_DLL_PATH}"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+        )
+    endif()
 elseif(AppleClang)
     target_link_options(${PROJECT_NAME} PRIVATE "-Wl,-force_load,$<TARGET_FILE:Nemesis::Havok>")
 else()

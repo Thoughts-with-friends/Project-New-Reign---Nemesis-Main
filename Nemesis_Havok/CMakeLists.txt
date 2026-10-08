@@ -2,9 +2,17 @@
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
 project("Nemesis_Havok" VERSION 1.0.0)
+
+# MSVC-style compilers (cl, clang-cl) ignore GCC's -O3. Keep CMake's defaults
+# there (they also select the CRT, e.g. /MD) and only drop /DNDEBUG, matching the
+# -O3 builds which keep asserts.
+if(MSVC)
+    string(REPLACE "/DNDEBUG" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+else()
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+endif()
 
 include_directories(include)
 

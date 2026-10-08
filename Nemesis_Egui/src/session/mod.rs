@@ -211,6 +211,7 @@ mod tests {
     fn request(engine_path: &str) -> PatchRequest {
         PatchRequest {
             engine_path: PathBuf::from(engine_path),
+            embedded: false,
             data_dir: String::new(),
             output_dir: String::new(),
             platform: Platform::Amd64,

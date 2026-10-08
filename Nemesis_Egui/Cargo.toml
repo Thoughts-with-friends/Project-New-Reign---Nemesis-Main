@@ -10,6 +10,12 @@ publish = false
 name = "Nemesis_Egui"
 path = "src/main.rs"
 
+[features]
+default = ["embedded-engine"]
+# Compile Nemesis_Core_Engine (C++, via CMake) and link it into the executable.
+# Without it, an external Nemesis_Engine.exe is launched instead.
+embedded-engine = []
+
 [dependencies]
 eframe = "0.35"
 rfd = "0.17"

@@ -2,15 +2,21 @@
 
 use std::ffi::OsString;
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 
+use super::embedded;
 use crate::config::Platform;
 
 /// Everything needed to start one patch run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchRequest {
-    /// Path of `Nemesis_Engine(.exe)`.
+    /// Path of `Nemesis_Engine(.exe)`. With [`PatchRequest::embedded`], only its
+    /// directory (the engine home with `mods`, `behavior_templates`, ...) is used.
     pub engine_path: PathBuf,
+    /// Runs the engine linked into this executable (see [`embedded`]) instead of
+    /// spawning `engine_path`.
+    pub embedded: bool,
     /// Skyrim data directory (`-d`). Omitted when empty.
     pub data_dir: String,
     /// Output directory (`-o`). Omitted when empty.
@@ -57,15 +63,38 @@ impl PatchRequest {
         args
     }
 
+    /// The process to start: program, arguments and working directory.
+    ///
+    /// An embedded run starts this executable in engine mode (it enters the engine
+    /// home itself, reporting a missing directory as an engine error); an external
+    /// run starts `engine_path` inside its own directory.
+    ///
+    /// # Errors
+    /// Returns an error when the path of this executable is unknown.
+    pub fn command(&self) -> io::Result<(PathBuf, Vec<OsString>, Option<PathBuf>)> {
+        let home = self.engine_path.parent().map(PathBuf::from);
+
+        if self.embedded {
+            let home = home.unwrap_or_default();
+            let args = embedded::self_args(&home, self.to_args());
+            return Ok((std::env::current_exe()?, args, None));
+        }
+
+        Ok((self.engine_path.clone(), self.to_args(), home))
+    }
+
     /// Returns the full command line as one human readable string for the log.
     /// Arguments containing spaces are quoted.
     pub fn display_command_line(&self) -> String {
-        let args: Vec<String> = self
-            .to_args()
+        let (program, args) = match self.command() {
+            Ok((program, args, _)) => (program, args),
+            Err(_) => (self.engine_path.clone(), self.to_args()),
+        };
+        let args: Vec<String> = args
             .iter()
             .map(|arg| quote(&arg.to_string_lossy()))
             .collect();
-        format!("\"{}\" {}", self.engine_path.display(), args.join(" "))
+        format!("\"{}\" {}", program.display(), args.join(" "))
     }
 
     /// Checks the directories before launching: the data directory must be
@@ -113,6 +142,7 @@ mod tests {
     fn request() -> PatchRequest {
         PatchRequest {
             engine_path: PathBuf::from("Nemesis_Engine.exe"),
+            embedded: false,
             data_dir: "D:/Skyrim Special Edition/Data".into(),
             output_dir: String::new(),
             platform: Platform::Amd64,
@@ -151,6 +181,25 @@ mod tests {
             request().display_command_line(),
             "\"Nemesis_Engine.exe\" -p amd64 -pi -d \"D:/Skyrim Special Edition/Data\" -db -m tkuc bcbi"
         );
+    }
+
+    #[test]
+    fn embedded_runs_this_executable_in_engine_mode() {
+        let request = PatchRequest {
+            engine_path: PathBuf::from("D:/Data/Nemesis_Engine/Nemesis_Engine.exe"),
+            embedded: true,
+            ..request()
+        };
+
+        let (program, args, cwd) = request.command().unwrap();
+        assert_eq!(program, std::env::current_exe().unwrap());
+        assert_eq!(args[0], embedded::ENGINE_MODE_ARG);
+        assert_eq!(
+            args[1],
+            PathBuf::from("D:/Data/Nemesis_Engine").into_os_string()
+        );
+        assert_eq!(args[2..], request.to_args()[..]);
+        assert_eq!(cwd, None);
     }
 
     #[test]

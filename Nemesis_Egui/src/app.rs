@@ -15,7 +15,7 @@ use eframe::egui::{self, Frame, Margin, Panel, Ui};
 use crate::config::{AppConfig, LoadedFrom};
 use crate::diagnostics;
 use crate::engine::{self, PatchRequest};
-use crate::location::Locations;
+use crate::location::{Locations, detect};
 use crate::mods::{ListEdit, ModList};
 use crate::os;
 use crate::session::{LogBuffer, LogKind, PatchSession};
@@ -48,7 +48,8 @@ pub struct NemesisApp {
 impl NemesisApp {
     /// Creates the app: loads the config, sets up fonts/theme and scans mods.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let (config, loaded_from) = AppConfig::load();
+        let (mut config, loaded_from) = AppConfig::load();
+        let dropped_source = drop_legacy_mo2_source(&mut config, &loaded_from);
         let has_cjk = style::install_fonts(&cc.egui_ctx);
         style::apply_theme(&cc.egui_ctx, config.dark_mode);
 
@@ -66,6 +67,13 @@ impl NemesisApp {
 
         for line in diagnostics::startup_lines(&loaded_from) {
             app.log.push(LogKind::Gui, line);
+        }
+
+        if let Some(source) = dropped_source {
+            app.log.push(
+                LogKind::Gui,
+                format!("Old mod source \"{source}\" (MO2 mods folder) was reset to auto-detect the Skyrim Data directory."),
+            );
         }
 
         if !has_cjk {
@@ -145,6 +153,7 @@ impl NemesisApp {
 
         let request = PatchRequest {
             engine_path: self.locations.engine_path.clone(),
+            embedded: self.locations.embedded_engine,
             data_dir: self.locations.engine_data_arg(),
             output_dir: self.config.output_dir.clone(),
             platform: self.config.platform,
@@ -281,6 +290,22 @@ impl eframe::App for NemesisApp {
         self.dirty = true;
         self.save_config();
     }
+}
+
+/// Clears a migrated mod source that points at MO2's `mods` folder.
+///
+/// Older versions were configured with that folder; mods are now read from the
+/// game's `Data` directory (which MO2 virtualizes), so such a value falls back to
+/// auto-detection. Returns the dropped value.
+fn drop_legacy_mo2_source(config: &mut AppConfig, loaded_from: &LoadedFrom) -> Option<String> {
+    let is_legacy = matches!(loaded_from, LoadedFrom::Legacy(_));
+    let source = config.data_dir.trim();
+
+    if !is_legacy || source.is_empty() || !detect::is_mo2_mods_dir(Path::new(source)) {
+        return None;
+    }
+
+    Some(std::mem::take(&mut config.data_dir))
 }
 
 /// Frame of the side panels with the given horizontal/vertical margins.

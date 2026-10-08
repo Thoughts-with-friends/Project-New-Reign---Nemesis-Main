@@ -1,13 +1,17 @@
-//! Running `Nemesis_Engine` as a child process.
+//! Running the Nemesis engine as a child process.
 //!
-//! The GUI does not link the C++ engine. Instead it launches the engine executable
-//! with the same command line the original Qt launcher uses and parses its output.
+//! By default the C++ engine is linked into this executable (see [`embedded`])
+//! and the GUI starts a copy of itself in engine mode; an external
+//! `Nemesis_Engine.exe` can be used instead. Either way the engine receives the
+//! command line the original Qt launcher used, and its output is parsed.
 //!
 //! * [`request`]: building the command line from the user's choices;
 //! * [`output`]: classifying the engine's standard output;
 //! * [`process`]: spawning, reading and killing the engine process;
-//! * [`log_path`]: locating the `log.txt` written by the engine.
+//! * [`log_path`]: locating the `log.txt` written by the engine;
+//! * [`embedded`]: the engine linked into this executable (C++ FFI).
 
+pub mod embedded;
 mod log_path;
 mod output;
 mod process;

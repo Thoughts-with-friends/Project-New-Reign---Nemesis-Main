@@ -50,7 +50,7 @@ impl EngineProcess {
     ) -> io::Result<Self> {
         // No `is_file` pre-check: it can give false negatives inside MO2's
         // virtual file system. Spawning reports a missing executable anyway.
-        let mut child = build_command(request).spawn().map_err(|err| {
+        let mut child = build_command(request)?.spawn().map_err(|err| {
             io::Error::new(
                 err.kind(),
                 format!("{err} ({})", request.engine_path.display()),
@@ -121,17 +121,18 @@ impl Drop for EngineProcess {
     }
 }
 
-/// Builds the [`Command`]: piped output, no stdin, the engine directory as the
-/// working directory, and no console window on Windows.
-fn build_command(request: &PatchRequest) -> Command {
-    let mut command = Command::new(&request.engine_path);
+/// Builds the [`Command`] described by [`PatchRequest::command`]: piped output,
+/// no stdin, and no console window on Windows.
+fn build_command(request: &PatchRequest) -> io::Result<Command> {
+    let (program, args, cwd) = request.command()?;
+    let mut command = Command::new(program);
     command
-        .args(request.to_args())
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    if let Some(dir) = request.engine_path.parent() {
+    if let Some(dir) = cwd {
         command.current_dir(dir);
     }
 
@@ -143,7 +144,7 @@ fn build_command(request: &PatchRequest) -> Command {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    command
+    Ok(command)
 }
 
 /// Converts one standard output line into events.
@@ -216,6 +217,7 @@ mod tests {
     fn run(engine_path: &Path, mods: Vec<String>) -> Vec<EngineEvent> {
         let request = PatchRequest {
             engine_path: engine_path.to_path_buf(),
+            embedded: false,
             data_dir: String::new(),
             output_dir: String::new(),
             platform: Platform::Amd64,
@@ -238,6 +240,7 @@ mod tests {
     fn missing_executable_is_reported() {
         let request = PatchRequest {
             engine_path: PathBuf::from("Z:/missing/Nemesis_Engine.exe"),
+            embedded: false,
             data_dir: String::new(),
             output_dir: String::new(),
             platform: Platform::Win32,

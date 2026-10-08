@@ -56,13 +56,19 @@ pub fn scan_lines(locations: &Locations, report: &ScanReport) -> Vec<String> {
         .as_ref()
         .map_or_else(|| "(not found)".to_owned(), |dir| dir.display().to_string());
 
+    let detected = locations.detected_by.as_deref().map_or_else(
+        || "Skyrim Data auto-detection: not found".to_owned(),
+        |method| format!("Skyrim Data auto-detected via {method}"),
+    );
+
     let mut lines = vec![
+        detected,
         format!(
             "Mod source: {} ({source_kind})",
             or_none(&locations.data_source)
         ),
         format!("Skyrim Data for the engine (-d): {engine_data}"),
-        format!("Engine: {}", locations.engine_path.display()),
+        engine_line(locations),
     ];
 
     let interesting: Vec<String> = report
@@ -102,6 +108,16 @@ pub fn scan_lines(locations: &Locations, report: &ScanReport) -> Vec<String> {
     lines
 }
 
+/// Which engine runs: the built-in one (with its home directory) or an external exe.
+fn engine_line(locations: &Locations) -> String {
+    if locations.embedded_engine {
+        let home = locations.engine_path.parent().unwrap_or(Path::new(""));
+        format!("Engine: built-in (resources in {})", home.display())
+    } else {
+        format!("Engine: {}", locations.engine_path.display())
+    }
+}
+
 /// `(none)` for an empty string.
 fn or_none(text: &str) -> &str {
     if text.is_empty() { "(none)" } else { text }
@@ -132,8 +148,9 @@ mod tests {
 
         let lines = scan_lines(&locations, &report);
 
-        assert!(lines[0].contains("2 MO2 mod folders"));
-        assert!(lines[1].ends_with("(not found)"));
+        assert!(lines[0].ends_with("not found"));
+        assert!(lines[1].contains("2 MO2 mod folders"));
+        assert!(lines[2].ends_with("(not found)"));
         assert_eq!(
             lines.last().map(String::as_str),
             Some("Scanned 2 directories, found 0 mods")

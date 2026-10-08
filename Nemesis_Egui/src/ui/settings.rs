@@ -6,6 +6,7 @@ use eframe::egui::{self, Button, ScrollArea, Ui};
 
 use super::widgets::{PickKind, path_input};
 use crate::config::{AppConfig, Platform};
+use crate::engine::embedded;
 use crate::location::Locations;
 
 /// Something the user changed or requested on the settings page.
@@ -87,11 +88,20 @@ fn engine_section(
     ui.heading("Engine");
     ui.add_space(4.0);
 
-    let hint = format!("Empty = {}", locations.engine_path.display());
+    let home = locations
+        .engine_path
+        .parent()
+        .unwrap_or(std::path::Path::new(""));
+    // The hint is only visible while the field is empty.
+    let hint = if embedded::AVAILABLE {
+        format!("Empty = built-in engine (resources in {})", home.display())
+    } else {
+        format!("Empty = {}", locations.engine_path.display())
+    };
     let kind = PickKind::Executable;
     if path_input(
         ui,
-        "Nemesis_Engine executable",
+        "External Nemesis_Engine executable (optional, replaces the built-in engine)",
         &hint,
         &mut config.engine_path,
         kind,
