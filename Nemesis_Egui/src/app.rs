@@ -3,7 +3,7 @@
 //!
 //! Layout (modelled after D-Merge):
 //!
-//! * top: Skyrim data / output directory inputs;
+//! * top: Skyrim data (or MO2 mods glob) / output directory inputs;
 //! * center: the mod table with checkboxes, search, and drag & drop reordering;
 //! * bottom: engine log, progress bar, log buttons and the Patch button;
 //! * footer: tab bar switching between *Patch* and *Settings*.
@@ -12,8 +12,10 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Frame, Margin, Panel, Ui};
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, LoadedFrom};
+use crate::diagnostics;
 use crate::engine::{self, PatchRequest};
+use crate::location::Locations;
 use crate::mods::{ListEdit, ModList};
 use crate::os;
 use crate::session::{LogBuffer, LogKind, PatchSession};
@@ -29,6 +31,8 @@ pub struct NemesisApp {
     config: AppConfig,
     /// Whether `config` differs from the file on disk.
     dirty: bool,
+    /// Paths resolved from `config` at the last rescan.
+    locations: Locations,
     /// Installed mods in merge order.
     mods: ModList,
     /// Search text and drag state of the mod table.
@@ -44,19 +48,25 @@ pub struct NemesisApp {
 impl NemesisApp {
     /// Creates the app: loads the config, sets up fonts/theme and scans mods.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let config = AppConfig::load();
+        let (config, loaded_from) = AppConfig::load();
         let has_cjk = style::install_fonts(&cc.egui_ctx);
         style::apply_theme(&cc.egui_ctx, config.dark_mode);
 
         let mut app = Self {
             config,
-            dirty: false,
+            // A migrated legacy file is written to the new location right away.
+            dirty: matches!(loaded_from, LoadedFrom::Legacy(_)),
+            locations: Locations::default(),
             mods: ModList::default(),
             table: TableState::default(),
             tab: Tab::default(),
             session: PatchSession::default(),
             log: LogBuffer::default(),
         };
+
+        for line in diagnostics::startup_lines(&loaded_from) {
+            app.log.push(LogKind::Gui, line);
+        }
 
         if !has_cjk {
             let message = "No CJK system font found; non-Latin text may not display correctly.";
@@ -71,17 +81,25 @@ impl NemesisApp {
     // Config and mod list
     // ---------------------------------------------------------------------
 
-    /// Re-reads `<engine dir>/mods`, preserving the current order and check states.
+    /// Resolves the paths again and rescans the mods, preserving the current
+    /// order and check states. The result is described in the log.
     fn rescan_mods(&mut self) {
         self.sync_order_to_config();
+        self.locations = Locations::resolve(&self.config);
+
         let config = &self.config;
-        self.mods = ModList::scan(
-            &config.mods_dir(),
+        let (mods, report) = ModList::scan(
+            &self.locations.mod_dirs,
             &config.mod_order,
             config.enable_new_mods,
         );
+        self.mods = mods;
         self.table.cancel_drag();
         self.sync_order_to_config();
+
+        for line in diagnostics::scan_lines(&self.locations, &report) {
+            self.log.push(LogKind::Gui, line);
+        }
     }
 
     /// Applies an edit to the mod list and records the new order.
@@ -108,8 +126,11 @@ impl NemesisApp {
 
         self.dirty = false;
         if let Err(err) = self.config.save() {
-            self.log
-                .push(LogKind::Error, format!("Failed to save settings: {err}"));
+            let path = AppConfig::file_path();
+            self.log.push(
+                LogKind::Error,
+                format!("Failed to save settings to {}: {err}", path.display()),
+            );
         }
     }
 
@@ -123,8 +144,8 @@ impl NemesisApp {
         self.save_config();
 
         let request = PatchRequest {
-            engine_path: self.config.resolved_engine_path(),
-            data_dir: self.config.data_dir.clone(),
+            engine_path: self.locations.engine_path.clone(),
+            data_dir: self.locations.engine_data_arg(),
             output_dir: self.config.output_dir.clone(),
             platform: self.config.platform,
             debug_mode: self.config.debug_mode,
@@ -146,11 +167,11 @@ impl NemesisApp {
 
     /// Location of the engine's `log.txt` for the current settings.
     fn engine_log_path(&self) -> PathBuf {
-        let config = &self.config;
+        let locations = &self.locations;
         engine::log_file_path(
-            &config.resolved_engine_path(),
-            &config.data_dir,
-            &config.output_dir,
+            &locations.engine_path,
+            &locations.engine_data_arg(),
+            &self.config.output_dir,
         )
     }
 
@@ -185,11 +206,11 @@ impl NemesisApp {
         Panel::top("directories")
             .frame(panel_frame(ui, 16, 12))
             .show(ui, |ui| {
-                let changes = directories::show(ui, &mut self.config, running);
+                let changes = directories::show(ui, &mut self.config, &self.locations, running);
                 self.dirty |= changes.data_dir || changes.output_dir;
 
-                // The default engine path depends on the data directory.
-                if changes.data_dir && self.config.engine_path.trim().is_empty() {
+                // The mod folders, `-d` and the default engine path all depend on it.
+                if changes.data_dir {
                     self.rescan_mods();
                 }
             });
@@ -197,8 +218,8 @@ impl NemesisApp {
         egui::CentralPanel::default()
             .frame(Frame::central_panel(ui.style()).inner_margin(Margin::symmetric(16, 10)))
             .show(ui, |ui| {
-                let mods_dir = self.config.mods_dir();
-                for event in mod_table::show(ui, &self.mods, &mut self.table, &mods_dir, running) {
+                let source = self.locations.data_source.clone();
+                for event in mod_table::show(ui, &self.mods, &mut self.table, &source, running) {
                     match event {
                         TableEvent::Edit(edit) => self.edit_mods(edit),
                         TableEvent::Rescan => self.rescan_mods(),
@@ -214,12 +235,12 @@ impl NemesisApp {
         egui::CentralPanel::default()
             .frame(Frame::central_panel(ui.style()).inner_margin(Margin::same(20)))
             .show(ui, |ui| {
-                for action in settings::show(ui, &mut self.config, running) {
+                for action in settings::show(ui, &mut self.config, &self.locations, running) {
                     self.dirty = true;
 
                     match action {
                         SettingsAction::ConfigChanged => {}
-                        SettingsAction::EngineChanged => self.rescan_mods(),
+                        SettingsAction::PathsChanged => self.rescan_mods(),
                         SettingsAction::ThemeChanged => {
                             style::apply_theme(ui.ctx(), self.config.dark_mode);
                         }

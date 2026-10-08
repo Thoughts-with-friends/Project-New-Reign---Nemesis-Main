@@ -10,7 +10,9 @@
 
 mod app;
 mod config;
+mod diagnostics;
 mod engine;
+mod location;
 mod mods;
 mod os;
 mod session;

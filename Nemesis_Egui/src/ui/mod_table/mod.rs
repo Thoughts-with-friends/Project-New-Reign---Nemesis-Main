@@ -10,8 +10,6 @@ mod drag;
 mod header;
 mod rows;
 
-use std::path::Path;
-
 use eframe::egui::{
     self, Align, Button, Key, Label, Layout, RichText, ScrollArea, TextEdit, Ui,
     scroll_area::{DragScroll, ScrollSource},
@@ -59,7 +57,7 @@ pub fn show(
     ui: &mut Ui,
     mods: &ModList,
     state: &mut TableState,
-    mods_dir: &Path,
+    source: &str,
     running: bool,
 ) -> Vec<TableEvent> {
     let mut events = Vec::new();
@@ -75,7 +73,7 @@ pub fn show(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
-            toolbar(ui, state, mods_dir, running, &mut events);
+            toolbar(ui, state, source, running, &mut events);
             ui.separator();
 
             let columns = header::show(ui, mods, &visible, running, &mut events);
@@ -111,11 +109,11 @@ pub fn show(
     events
 }
 
-/// Title, mods path, search box and rescan button.
+/// Title, mod source, search box and rescan button.
 fn toolbar(
     ui: &mut Ui,
     state: &mut TableState,
-    mods_dir: &Path,
+    source: &str,
     running: bool,
     events: &mut Vec<TableEvent>,
 ) {
@@ -138,12 +136,11 @@ fn toolbar(
                         state.search.clear();
                     }
 
-                    // The mods path takes whatever space is left and is truncated.
+                    // The mod source takes whatever space is left and is truncated.
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        let path = mods_dir.display().to_string();
-                        ui.add(Label::new(RichText::new(&path).weak().small()).truncate())
+                        ui.add(Label::new(RichText::new(source).weak().small()).truncate())
                             .on_hover_text(format!(
-                                "Mods are read from <engine directory>/mods\n{path}"
+                                "Mods are read from <source>/Nemesis_Engine/mod and <engine dir>/mods\n{source}"
                             ));
                     });
                 });

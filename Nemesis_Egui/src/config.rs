@@ -1,8 +1,10 @@
 //! Persistent user settings.
 //!
-//! The configuration is stored as pretty-printed JSON next to the GUI executable
-//! (`nemesis_egui.json`), so that portable installs keep their settings together
-//! with the program.
+//! Settings are stored as JSON in the user's configuration directory
+//! (`%APPDATA%\Nemesis_Egui\settings.json` on Windows). That location is outside
+//! the folders Mod Organizer 2 virtualizes, so it behaves the same whether the GUI
+//! runs inside or outside MO2. Older versions wrote `nemesis_egui.json` next to
+//! the executable; that file is migrated on first load.
 
 use std::fs;
 use std::io;
@@ -10,8 +12,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// File name of the configuration file placed next to the executable.
-pub const CONFIG_FILE_NAME: &str = "nemesis_egui.json";
+/// Directory name inside the user's configuration directory.
+const CONFIG_DIR_NAME: &str = "Nemesis_Egui";
+/// File name of the settings file.
+const CONFIG_FILE_NAME: &str = "settings.json";
+/// File name used by older versions, next to the executable.
+const LEGACY_FILE_NAME: &str = "nemesis_egui.json";
 
 /// Output platform understood by the engine's `-p` argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -70,11 +76,14 @@ pub struct ModOrderEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
-    /// Skyrim `Data` directory passed to the engine with `-d`.
+    /// Where mods are read from: a Skyrim `Data` directory or a glob over MO2 mod
+    /// folders such as `D:\MO2\mods\*` (see [`crate::location`]). Empty = automatic.
     pub data_dir: String,
+    /// Skyrim `Data` directory passed to the engine with `-d`. Empty = automatic.
+    pub engine_data_dir: String,
     /// Output (staging) directory passed with `-o`. Empty means "write into the data directory".
     pub output_dir: String,
-    /// Explicit path of `Nemesis_Engine(.exe)`. Empty means [`AppConfig::default_engine_path`].
+    /// Explicit path of `Nemesis_Engine(.exe)`. Empty = `<engine data dir>/Nemesis_Engine/`.
     pub engine_path: String,
     /// Output platform passed with `-p`.
     pub platform: Platform,
@@ -94,6 +103,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             data_dir: String::new(),
+            engine_data_dir: String::new(),
             output_dir: String::new(),
             engine_path: String::new(),
             platform: Platform::Amd64,
@@ -106,22 +116,50 @@ impl Default for AppConfig {
     }
 }
 
+/// Where [`AppConfig::load`] got the settings from, for diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadedFrom {
+    /// The settings file.
+    File(PathBuf),
+    /// The legacy file next to the executable (copied to the new location on save).
+    Legacy(PathBuf),
+    /// No readable file; defaults were used.
+    Defaults,
+}
+
 impl AppConfig {
-    /// Returns the location of the configuration file (next to the running executable).
+    /// Location of the settings file: `<config dir>/Nemesis_Egui/settings.json`.
+    ///
+    /// The config dir is `%APPDATA%` on Windows and `$XDG_CONFIG_HOME` or
+    /// `~/.config` elsewhere; the executable's directory is the last resort.
     pub fn file_path() -> PathBuf {
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(Path::to_path_buf))
-            .unwrap_or_default()
+        config_base_dir()
+            .unwrap_or_else(exe_dir)
+            .join(CONFIG_DIR_NAME)
             .join(CONFIG_FILE_NAME)
     }
 
-    /// Loads the configuration from [`AppConfig::file_path`].
-    ///
-    /// A missing or malformed file yields the default configuration instead of an error,
-    /// because the GUI must always be able to start.
-    pub fn load() -> Self {
-        Self::load_from(&Self::file_path()).unwrap_or_default()
+    /// Location of the settings file written by older versions.
+    pub fn legacy_file_path() -> PathBuf {
+        exe_dir().join(LEGACY_FILE_NAME)
+    }
+
+    /// Loads the settings, falling back to the legacy file and then to defaults,
+    /// so the GUI can always start.
+    pub fn load() -> (Self, LoadedFrom) {
+        Self::load_first(&Self::file_path(), &Self::legacy_file_path())
+    }
+
+    /// Loads from `path`, else from `legacy`, else returns defaults.
+    pub fn load_first(path: &Path, legacy: &Path) -> (Self, LoadedFrom) {
+        if let Ok(config) = Self::load_from(path) {
+            return (config, LoadedFrom::File(path.to_path_buf()));
+        }
+
+        match Self::load_from(legacy) {
+            Ok(config) => (config, LoadedFrom::Legacy(legacy.to_path_buf())),
+            Err(_) => (Self::default(), LoadedFrom::Defaults),
+        }
     }
 
     /// Loads the configuration from an explicit path.
@@ -141,57 +179,56 @@ impl AppConfig {
         self.save_to(&Self::file_path())
     }
 
-    /// Saves the configuration to an explicit path.
+    /// Saves the configuration to an explicit path, creating its directory.
     ///
     /// # Errors
     /// Returns an error when serialization fails or the file cannot be written.
     pub fn save_to(&self, path: &Path) -> io::Result<()> {
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+
         let text = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         fs::write(path, text)
     }
+}
 
-    /// Default engine location: `<data>/nemesis_engine/Nemesis_Engine(.exe)`,
-    /// matching where the original Qt launcher looks for it.
-    pub fn default_engine_path(&self) -> PathBuf {
-        let exe_name = if cfg!(windows) {
-            "Nemesis_Engine.exe"
-        } else {
-            "Nemesis_Engine"
-        };
-        Path::new(&self.data_dir)
-            .join("nemesis_engine")
-            .join(exe_name)
-    }
+/// The per-user configuration directory, if the environment provides one.
+fn config_base_dir() -> Option<PathBuf> {
+    let from_env = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
 
-    /// Returns the engine path that will actually be launched.
-    pub fn resolved_engine_path(&self) -> PathBuf {
-        if self.engine_path.trim().is_empty() {
-            self.default_engine_path()
-        } else {
-            PathBuf::from(self.engine_path.trim())
-        }
+    if cfg!(windows) {
+        from_env("APPDATA").map(PathBuf::from)
+    } else {
+        from_env("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| from_env("HOME").map(|home| PathBuf::from(home).join(".config")))
     }
+}
 
-    /// Directory scanned for mods. The engine only loads patches from `<engine dir>/mods`,
-    /// so the GUI derives the list from the same place.
-    pub fn mods_dir(&self) -> PathBuf {
-        self.resolved_engine_path()
-            .parent()
-            .map(|dir| dir.join("mods"))
-            .unwrap_or_else(|| PathBuf::from("mods"))
-    }
+/// Directory of the running executable (empty when unknown).
+fn exe_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join(format!("nemesis_egui_cfg_{}", std::process::id()))
+            .join(name)
+    }
+
     #[test]
-    fn round_trips_through_json() {
-        let path =
-            std::env::temp_dir().join(format!("nemesis_egui_cfg_{}.json", std::process::id()));
+    fn round_trips_through_json_and_creates_the_directory() {
+        let path = temp_path("nested/settings.json");
         let config = AppConfig {
-            data_dir: "D:/Skyrim/Data".into(),
+            data_dir: "D:/MO2/mods/*".into(),
             output_dir: "D:/MO2/mods/Nemesis Output 用".into(),
             mod_order: vec![ModOrderEntry {
                 code: "tkuc".into(),
@@ -202,21 +239,26 @@ mod tests {
 
         config.save_to(&path).unwrap();
         let loaded = AppConfig::load_from(&path).unwrap();
-        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
 
         assert_eq!(config, loaded);
     }
 
     #[test]
-    fn derives_engine_and_mods_dir_from_data_dir() {
-        let config = AppConfig {
-            data_dir: "C:/Data".into(),
-            ..AppConfig::default()
-        };
-        let engine = config.resolved_engine_path();
+    fn falls_back_to_legacy_file_then_defaults() {
+        let path = temp_path("missing/settings.json");
+        let legacy = temp_path("legacy.json");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, r#"{ "data_dir": "D:\\MO2\\mods" }"#).unwrap();
 
-        assert!(engine.starts_with("C:/Data/nemesis_engine"));
-        assert_eq!(config.mods_dir(), Path::new("C:/Data/nemesis_engine/mods"));
+        let (config, from) = AppConfig::load_first(&path, &legacy);
+        let _ = fs::remove_file(&legacy);
+        let (defaults, none) = AppConfig::load_first(&path, &legacy);
+
+        assert_eq!(config.data_dir, "D:\\MO2\\mods");
+        assert_eq!(from, LoadedFrom::Legacy(legacy));
+        assert_eq!(defaults, AppConfig::default());
+        assert_eq!(none, LoadedFrom::Defaults);
     }
 
     #[test]
@@ -224,7 +266,15 @@ mod tests {
         let config: AppConfig = serde_json::from_str(r#"{ "data_dir": "X" }"#).unwrap();
 
         assert_eq!(config.data_dir, "X");
+        assert_eq!(config.engine_data_dir, "");
         assert_eq!(config.platform, Platform::Amd64);
         assert!(config.enable_new_mods);
+    }
+
+    #[test]
+    fn settings_live_outside_the_executable_directory() {
+        if config_base_dir().is_some() {
+            assert!(!AppConfig::file_path().starts_with(exe_dir()));
+        }
     }
 }

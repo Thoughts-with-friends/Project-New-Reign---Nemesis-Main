@@ -92,7 +92,10 @@ fn existing_dir(value: &str) -> Option<PathBuf> {
         return None;
     }
 
-    path.ancestors().find(|p| p.is_dir()).map(Path::to_path_buf)
+    // `read_dir` instead of `is_dir`: the latter is unreliable under MO2's VFS.
+    path.ancestors()
+        .find(|dir| !dir.as_os_str().is_empty() && std::fs::read_dir(dir).is_ok())
+        .map(Path::to_path_buf)
 }
 
 #[cfg(test)]

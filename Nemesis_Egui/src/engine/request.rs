@@ -1,7 +1,8 @@
 //! The engine command line.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::PathBuf;
 
 use crate::config::Platform;
 
@@ -67,21 +68,29 @@ impl PatchRequest {
         format!("\"{}\" {}", self.engine_path.display(), args.join(" "))
     }
 
-    /// Checks the directories before launching: the data directory must exist and
-    /// the output directory is created when missing.
+    /// Checks the directories before launching: the data directory must be
+    /// readable and the output directory is created when missing.
+    ///
+    /// Directories are probed with `read_dir` rather than `Path::is_dir`, which can
+    /// report false negatives inside MO2's virtual file system.
     ///
     /// # Errors
     /// Returns a message describing the first problem found.
     pub fn prepare(&self) -> Result<(), String> {
         let data_dir = self.data_dir.trim();
-        if !data_dir.is_empty() && !Path::new(data_dir).is_dir() {
-            return Err(format!("Skyrim data directory does not exist: {data_dir}"));
+        if !data_dir.is_empty() && fs::read_dir(data_dir).is_err() {
+            return Err(format!("Skyrim data directory cannot be read: {data_dir}"));
         }
 
         let output_dir = self.output_dir.trim();
         if !output_dir.is_empty() {
-            std::fs::create_dir_all(output_dir)
-                .map_err(|err| format!("Cannot create output directory: {err}"))?;
+            // `create_dir_all` checks `is_dir` internally, so only trust its error
+            // when the directory really cannot be listed afterwards.
+            if let Err(err) = fs::create_dir_all(output_dir)
+                && fs::read_dir(output_dir).is_err()
+            {
+                return Err(format!("Cannot create output directory: {err}"));
+            }
         }
 
         Ok(())

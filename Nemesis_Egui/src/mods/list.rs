@@ -1,8 +1,10 @@
 //! The ordered, checkable list of installed mods shown in the table.
 
-use std::path::Path;
+use std::path::PathBuf;
 
-use super::{ModEntry, active_mod_codes, apply_saved_order, move_item, scan_mods, to_saved_order};
+use super::{
+    ModEntry, ScanReport, active_mod_codes, apply_saved_order, move_item, scan_dirs, to_saved_order,
+};
 use crate::config::ModOrderEntry;
 
 /// A change to the mod list requested by the UI.
@@ -38,23 +40,42 @@ pub struct ModList {
 }
 
 impl ModList {
-    /// Scans `mods_dir` and orders the result according to `saved`.
+    /// Scans `dirs` and orders the result according to `saved`.
     ///
-    /// A failed scan yields an empty list with [`ModList::scan_error`] set.
-    pub fn scan(mods_dir: &Path, saved: &[ModOrderEntry], enable_new: bool) -> Self {
-        match scan_mods(mods_dir) {
-            Ok(found) => Self {
-                entries: apply_saved_order(found, saved, enable_new),
-                scan_error: None,
-            },
-            Err(err) => Self {
-                entries: Vec::new(),
-                scan_error: Some(format!(
-                    "Cannot read mods directory \"{}\": {err}",
-                    mods_dir.display()
-                )),
-            },
-        }
+    /// Returns the list and the scan report (with its `mods` moved into the list).
+    /// [`ModList::scan_error`] is set when nothing was found and the reason is
+    /// known: no directories to scan, or directories that could not be read.
+    pub fn scan(dirs: &[PathBuf], saved: &[ModOrderEntry], enable_new: bool) -> (Self, ScanReport) {
+        let mut report = scan_dirs(dirs);
+        let mods = std::mem::take(&mut report.mods);
+
+        let scan_error = if !mods.is_empty() {
+            None
+        } else if dirs.is_empty() {
+            Some(
+                "No mod directory to scan. Set the Skyrim Data directory or an MO2 mods pattern."
+                    .to_owned(),
+            )
+        } else {
+            let failures: Vec<String> = report
+                .dirs
+                .iter()
+                .filter_map(|dir| {
+                    dir.result
+                        .as_ref()
+                        .err()
+                        .map(|err| format!("{}: {err}", dir.dir.display()))
+                })
+                .collect();
+            (!failures.is_empty())
+                .then(|| format!("Cannot read mod directories:\n{}", failures.join("\n")))
+        };
+
+        let list = Self {
+            entries: apply_saved_order(mods, saved, enable_new),
+            scan_error,
+        };
+        (list, report)
     }
 
     /// All rows in merge order.
@@ -192,9 +213,46 @@ mod tests {
     }
 
     #[test]
-    fn failed_scan_reports_error() {
-        let mods = ModList::scan(Path::new("Z:/definitely/missing/mods"), &[], true);
+    fn missing_dirs_are_empty_not_errors() {
+        let (mods, report) =
+            ModList::scan(&[PathBuf::from("Z:/definitely/missing/mod")], &[], true);
         assert!(mods.is_empty());
-        assert!(mods.scan_error().is_some());
+        assert!(mods.scan_error().is_none());
+        assert_eq!(report.dirs.len(), 1);
+
+        let (none, _) = ModList::scan(&[], &[], true);
+        assert!(none.scan_error().is_some());
+    }
+
+    #[test]
+    fn order_survives_save_load_and_rescan() {
+        let root = std::env::temp_dir().join(format!("nemesis_egui_order_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("Nemesis_Engine/mod");
+        for code in ["a", "b", "c"] {
+            std::fs::create_dir_all(dir.join(code)).unwrap();
+            std::fs::write(dir.join(code).join("info.ini"), format!("name={code}")).unwrap();
+        }
+        let dirs = [dir];
+
+        let (mut mods, _) = ModList::scan(&dirs, &[], true);
+        mods.apply(ListEdit::Move {
+            from: 2,
+            insert_before: 0,
+        });
+        mods.apply(ListEdit::Toggle(1));
+
+        let config = crate::config::AppConfig {
+            mod_order: mods.saved_order(&[]),
+            ..crate::config::AppConfig::default()
+        };
+        let path = root.join("settings.json");
+        config.save_to(&path).unwrap();
+        let loaded = crate::config::AppConfig::load_from(&path).unwrap();
+        let (rescanned, _) = ModList::scan(&dirs, &loaded.mod_order, true);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(codes(&rescanned), ["c", "a", "b"]);
+        assert_eq!(rescanned.active_codes(), ["c", "b"]);
     }
 }

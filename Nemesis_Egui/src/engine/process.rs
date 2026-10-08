@@ -48,17 +48,14 @@ impl EngineProcess {
         request: &PatchRequest,
         notify: impl Fn() + Send + Sync + 'static,
     ) -> io::Result<Self> {
-        if !request.engine_path.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "engine executable not found: {}",
-                    request.engine_path.display()
-                ),
-            ));
-        }
-
-        let mut child = build_command(request).spawn()?;
+        // No `is_file` pre-check: it can give false negatives inside MO2's
+        // virtual file system. Spawning reports a missing executable anyway.
+        let mut child = build_command(request).spawn().map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("{err} ({})", request.engine_path.display()),
+            )
+        })?;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let child = Arc::new(Mutex::new(child));
@@ -249,8 +246,10 @@ mod tests {
             mods: Vec::new(),
         };
 
+        // The exact kind depends on which part is missing (the working directory
+        // or the file); the message must name the engine path either way.
         let err = EngineProcess::spawn(&request, || {}).err().unwrap();
-        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(err.to_string().contains("Nemesis_Engine.exe"));
     }
 
     /// Runs a real executable that imitates the engine's output.

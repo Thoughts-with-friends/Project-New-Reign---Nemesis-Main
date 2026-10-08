@@ -11,13 +11,25 @@ Nemesis_Engine -p <platform> -pi [-d <data>] [-o <output>] [-db] [-s] -m <mod co
 
 ## Features
 
-- Pick the Skyrim `Data` directory and an output directory, for example an MO2 mod folder.
-- Lists every mod in `<engine dir>/mods/*/info.ini`, each with a checkbox. It also shows the author and site.
+- Pick the mod source and an output directory, for example an MO2 mod folder. The mod source can be:
+  - a Skyrim `Data` directory. Under MO2 this is the game's own `Data`, which the virtual file system fills with every enabled mod;
+  - a glob over MO2 mod folders, like D-Merge, for example `D:\Skyrim Special Edition\MO2\mods\*`. `*` and `?` match within one path component;
+  - an MO2 `mods` folder without `\*`, which is treated as `mods\*`.
+- **Empty field = automatic.** When the GUI is installed as `<MO2>/mods/<mod>/Nemesis_Egui.exe`, the default is `<MO2>/mods/*`. Otherwise it uses the Skyrim `Data` directory detected from the executable's path or the registry.
+- Lists every mod found in `<source>/Nemesis_Engine/mod/*/info.ini`, the layout of published Nemesis mods, and in `<engine dir>/mods/*/info.ini`. Each mod has a checkbox and shows its author and site.
+- The Skyrim `Data` passed to the engine with `-d` is detected separately. It comes from the registry when the source is a glob, and can be overridden in Settings.
 - Drag & drop to reorder, plus right-click → move to top/up/down/bottom.
 - **Merge order:** rows are merged from top to bottom. Lower rows are applied later and win conflicts. This matches the original launcher and the engine's `-m` semantics, where the right-most code has the highest priority.
 - Live progress bar, colored engine log, cancel, and "Open Log" / "Log (Directory)" buttons.
 - Settings: engine path, platform (`-p`), debug (`-db`), synchronous (`-s`), and dark/light theme.
-- Settings and mod order are saved to `nemesis_egui.json` next to the executable.
+- Settings and mod order are saved to `%APPDATA%\Nemesis_Egui\settings.json`. MO2 does not virtualize this folder, so writes are not redirected to `overwrite`. An old `nemesis_egui.json` next to the executable is migrated automatically.
+- On startup and after each rescan, the log lists the executable, the working directory, the settings file, the resolved paths, and every folder that contained mods. Copy this block when reporting detection problems.
+
+## Running under Mod Organizer 2
+
+1. Put `Nemesis_Egui.exe` in its own MO2 mod folder, for example `<MO2>/mods/Nemesis_egui/`, and add it as an MO2 executable.
+2. Leave the data field empty to use `<MO2>/mods/*`, or enter a glob or the game's `Data` folder.
+3. The GUI never relies on `Path::exists` / `is_file` / `is_dir`, because these can give false negatives inside MO2's virtual file system (USVFS). It opens or lists the path instead. It also collects each directory listing before reading files, so USVFS never sees nested directory handles.
 
 ## Source layout
 
@@ -27,7 +39,9 @@ The views in `ui/` only draw borrowed state and return events. `app.rs` owns the
 | --- | --- |
 | `main.rs` | Window setup and launch |
 | `app.rs` | App state, panel layout, handling UI events |
-| `config.rs` | Settings saved to `nemesis_egui.json` |
+| `config.rs` | Settings saved to `%APPDATA%\Nemesis_Egui\settings.json`, legacy migration |
+| `location/` | Resolving the data field: glob expansion (`glob`), MO2 / Skyrim detection (`detect`), `-d` and engine path |
+| `diagnostics.rs` | Log lines describing detected paths and scan results |
 | `os.rs` | Opening files, folders and web links |
 | `engine/` | Engine command line (`request`), output parsing (`output`), child process (`process`), `log.txt` location (`log_path`) |
 | `mods/` | `info.ini` scanning (`scan`), merge order (`order`), editable mod list (`list`) |

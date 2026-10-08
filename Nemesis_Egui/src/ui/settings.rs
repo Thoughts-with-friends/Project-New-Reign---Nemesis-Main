@@ -6,14 +6,16 @@ use eframe::egui::{self, Button, ScrollArea, Ui};
 
 use super::widgets::{PickKind, path_input};
 use crate::config::{AppConfig, Platform};
+use crate::location::Locations;
 
 /// Something the user changed or requested on the settings page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsAction {
     /// A plain setting changed and should be saved.
     ConfigChanged,
-    /// The engine path changed, so the mods must be rescanned.
-    EngineChanged,
+    /// A path or the platform changed: paths must be resolved again and the
+    /// mods rescanned.
+    PathsChanged,
     /// Dark mode was toggled.
     ThemeChanged,
     /// Sort the mod list by name.
@@ -26,14 +28,20 @@ pub enum SettingsAction {
 
 /// Draws the settings page, editing `config` in place.
 ///
-/// `disabled` locks settings that must not change while patching.
-pub fn show(ui: &mut Ui, config: &mut AppConfig, disabled: bool) -> Vec<SettingsAction> {
+/// `locations` shows what empty fields resolve to; `disabled` locks settings that
+/// must not change while patching.
+pub fn show(
+    ui: &mut Ui,
+    config: &mut AppConfig,
+    locations: &Locations,
+    disabled: bool,
+) -> Vec<SettingsAction> {
     let mut actions = Vec::new();
 
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            engine_section(ui, config, disabled, &mut actions);
+            engine_section(ui, config, locations, disabled, &mut actions);
             section(ui, "Patch options");
             patch_options(ui, config, disabled, &mut actions);
             section(ui, "Mod list");
@@ -48,7 +56,13 @@ pub fn show(ui: &mut Ui, config: &mut AppConfig, disabled: bool) -> Vec<Settings
             ui.separator();
             ui.horizontal(|ui| {
                 ui.weak("Settings file:");
-                ui.monospace(AppConfig::file_path().display().to_string());
+                let path = AppConfig::file_path();
+                ui.monospace(path.display().to_string());
+                if ui.small_button("Open folder").clicked()
+                    && let Some(dir) = path.parent()
+                {
+                    actions.push(SettingsAction::Open(dir.to_path_buf()));
+                }
             });
         });
 
@@ -62,17 +76,18 @@ fn section(ui: &mut Ui, title: &str) {
     ui.add_space(4.0);
 }
 
-/// Engine path and the derived mods directory.
+/// Engine executable, the `-d` directory and the scanned mod folders.
 fn engine_section(
     ui: &mut Ui,
     config: &mut AppConfig,
+    locations: &Locations,
     disabled: bool,
     actions: &mut Vec<SettingsAction>,
 ) {
     ui.heading("Engine");
     ui.add_space(4.0);
 
-    let hint = format!("Empty = {}", config.default_engine_path().display());
+    let hint = format!("Empty = {}", locations.engine_path.display());
     let kind = PickKind::Executable;
     if path_input(
         ui,
@@ -82,19 +97,34 @@ fn engine_section(
         kind,
         disabled,
     ) {
-        actions.push(SettingsAction::EngineChanged);
+        actions.push(SettingsAction::PathsChanged);
     }
 
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let mods_dir = config.mods_dir();
-        ui.label("Mods directory:");
-        ui.monospace(mods_dir.display().to_string());
 
-        if ui.small_button("Open").clicked() {
-            actions.push(SettingsAction::Open(mods_dir));
-        }
-    });
+    let detected = locations.engine_data_dir.as_ref().map_or_else(
+        || "not detected".to_owned(),
+        |dir| dir.display().to_string(),
+    );
+    let hint = format!("Empty = auto: {detected}");
+    let label = "Skyrim Data for the engine (-d). Under MO2, the game's Data folder (virtualized)";
+    if path_input(
+        ui,
+        label,
+        &hint,
+        &mut config.engine_data_dir,
+        PickKind::Folder,
+        disabled,
+    ) {
+        actions.push(SettingsAction::PathsChanged);
+    }
+
+    ui.add_space(4.0);
+    ui.label(format!(
+        "Scanning {} mod directories from: {}",
+        locations.mod_dirs.len(),
+        locations.data_source
+    ));
 }
 
 /// Engine switches: platform, debug and synchronous mode.
@@ -105,6 +135,7 @@ fn patch_options(
     actions: &mut Vec<SettingsAction>,
 ) {
     let mut changed = false;
+    let mut platform_changed = false;
 
     ui.add_enabled_ui(!disabled, |ui| {
         egui::Grid::new("patch_options")
@@ -116,7 +147,7 @@ fn patch_options(
                     .selected_text(config.platform.label())
                     .show_ui(ui, |ui| {
                         for platform in Platform::ALL {
-                            changed |= ui
+                            platform_changed |= ui
                                 .selectable_value(&mut config.platform, platform, platform.label())
                                 .changed();
                         }
@@ -136,7 +167,10 @@ fn patch_options(
             });
     });
 
-    if changed {
+    // The registry key used to detect Skyrim depends on the platform.
+    if platform_changed {
+        actions.push(SettingsAction::PathsChanged);
+    } else if changed {
         actions.push(SettingsAction::ConfigChanged);
     }
 }

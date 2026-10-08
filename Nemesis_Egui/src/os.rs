@@ -1,14 +1,18 @@
 //! Interaction with the operating system: opening files, folders and web links.
 
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 /// Opens a file or directory with the platform's default application.
 ///
+/// The path is probed by actually opening it (`read_dir` / `File::open`), because
+/// `Path::exists` can give false negatives inside MO2's virtual file system.
+///
 /// # Errors
-/// Returns a message when the path does not exist or no handler could be started.
+/// Returns a message when the path cannot be opened or no handler could be started.
 pub fn open_path(path: &Path) -> Result<(), String> {
-    if !path.exists() {
+    if fs::read_dir(path).is_err() && fs::File::open(path).is_err() {
         return Err(format!("Path does not exist: {}", path.display()));
     }
 

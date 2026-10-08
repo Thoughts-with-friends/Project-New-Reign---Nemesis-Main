@@ -1,7 +1,8 @@
 //! Nemesis mod patches: discovery and merge order.
 //!
-//! A Nemesis mod is a sub directory of `<engine dir>/mods` that contains an `info.ini`
-//! file. The folder name (lower-cased, without extension) is the *mod code* that the
+//! A Nemesis mod is a directory containing an `info.ini` file, found under
+//! `<Data>/Nemesis_Engine/mod/` (published mods) or `<engine dir>/mods/`. The
+//! folder name (lower-cased, without extension) is the *mod code* that the
 //! engine expects after `-m`.
 //!
 //! * [`scan`]: reading `info.ini` files and listing installed mods;
@@ -16,7 +17,7 @@ use std::path::PathBuf;
 
 pub use list::{ListEdit, ModList};
 pub use order::{active_mod_codes, apply_saved_order, move_item, to_saved_order};
-pub use scan::scan_mods;
+pub use scan::{ScanReport, scan_dirs};
 
 /// Metadata of a single mod read from its `info.ini`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
